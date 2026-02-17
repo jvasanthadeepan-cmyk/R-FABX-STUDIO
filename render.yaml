@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: lab-material-system
+    name: R-FABX-STUDIO
     env: node
     plan: free
     buildCommand: cd backend && npm install
@@ -19,4 +19,5 @@ databases:
     plan: free
     databaseName: lab_material_db
     user: lab_admin
+
 
