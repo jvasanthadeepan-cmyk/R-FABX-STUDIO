@@ -1,7 +1,9 @@
 const express = require("express");
+const path = require("path");
 const cors = require("cors");
 const pool = require("./db");
 const ExcelJS = require("exceljs");
+const setupDatabase = require("./setup_db");
 
 const app = express();
 
@@ -14,18 +16,14 @@ app.use(cors({
 
 app.use(express.json());
 
+// Serve static files from the root directory
+app.use(express.static(path.join(__dirname, "../")));
+app.use(express.static(process.cwd())); // Fallback for some deployment environments
+
 // Request logging middleware
 app.use((req, res, next) => {
   console.log(`📍 ${req.method} ${req.path}`);
   next();
-});
-
-// Serve static files from the React frontend app (or plain HTML/CSS/JS in parent dir)
-const path = require("path");
-app.use(express.static(path.join(__dirname, "../")));
-
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "../html/login.html"));
 });
 
 // ============================================
@@ -270,11 +268,11 @@ app.post("/upload-users", async (req, res) => {
 // LAB INVENTORY ENDPOINTS (Stock Book) ✅ ONLY ADDED THIS SECTION
 // ============================================
 
-// GET all lab_inventory records (Redirecting to materials as lab_inventory table doesn't exist)
+// GET all lab_inventory records
 app.get("/lab-inventory", async (req, res) => {
-  console.log("📚 GET /lab-inventory (fetching from materials)");
+  console.log("📚 GET /lab-inventory");
   try {
-    const result = await pool.query("SELECT * FROM materials ORDER BY id ASC");
+    const result = await pool.query("SELECT * FROM lab_inventory ORDER BY id ASC");
     console.log(`✓ Found ${result.rows.length} records`);
     res.json(result.rows);
   } catch (err) {
@@ -297,16 +295,12 @@ app.put("/lab-inventory/:id", async (req, res) => {
       opening_balance,
       quantity_received,
       quantity_issued,
-      balance,
-      amount_with_gst,
-      available_qty
+      balance
     } = req.body;
 
     console.log(`📝 Updating record ID: ${id}`);
     console.log(`  Code: ${material_code}`);
     console.log(`  Name: ${material_name}`);
-    console.log(`  Amount with GST: ${amount_with_gst}`);
-    console.log(`  Available Qty: ${available_qty}`);
 
     // Validate
     if (!material_code || !material_name) {
@@ -315,15 +309,15 @@ app.put("/lab-inventory/:id", async (req, res) => {
     }
 
     // Check if exists
-    const check = await pool.query("SELECT id FROM materials WHERE id = $1", [id]);
+    const check = await pool.query("SELECT id FROM lab_inventory WHERE id = $1", [id]);
     if (check.rows.length === 0) {
       console.log("❌ Record not found");
       return res.status(404).json({ message: "Record not found" });
     }
 
-    // Update with EXACT column names from materials table
+    // Update with EXACT column names from lab_inventory table
     const result = await pool.query(
-      `UPDATE materials 
+      `UPDATE lab_inventory 
        SET material_code = $1, 
            material_name = $2, 
            material_type = $3, 
@@ -332,10 +326,8 @@ app.put("/lab-inventory/:id", async (req, res) => {
            opening_balance = $6, 
            quantity_received = $7, 
            quantity_issued = $8, 
-           balance = $9,
-           amount_with_gst = $10,
-           available_quantity = $11
-       WHERE id = $12
+           balance = $9
+       WHERE id = $10
        RETURNING *`,
       [
         material_code,
@@ -347,8 +339,6 @@ app.put("/lab-inventory/:id", async (req, res) => {
         parseInt(quantity_received) || 0,
         parseInt(quantity_issued) || 0,
         parseInt(balance) || 0,
-        parseFloat(amount_with_gst) || 0,
-        parseInt(available_qty) || 0,
         id
       ]
     );
@@ -373,7 +363,7 @@ app.delete("/lab-inventory/:id", async (req, res) => {
     console.log(`🗑️ Deleting record ID: ${id}`);
 
     // Check if exists
-    const check = await pool.query("SELECT material_code FROM materials WHERE id = $1", [id]);
+    const check = await pool.query("SELECT material_code FROM lab_inventory WHERE id = $1", [id]);
     if (check.rows.length === 0) {
       console.log("❌ Record not found");
       return res.status(404).json({ message: "Record not found" });
@@ -382,7 +372,7 @@ app.delete("/lab-inventory/:id", async (req, res) => {
     const materialCode = check.rows[0].material_code;
 
     // Delete
-    await pool.query("DELETE FROM materials WHERE id = $1", [id]);
+    await pool.query("DELETE FROM lab_inventory WHERE id = $1", [id]);
 
     console.log(`✅ Record deleted: ${materialCode}`);
     res.json({ message: "Record deleted successfully", material_code: materialCode });
@@ -404,16 +394,12 @@ app.get("/materials", async (req, res) => {
   }
 });
 
-// ============================================
-// GET MATERIAL BY CODE OR ID
-// ============================================
 app.get("/materials/:code", async (req, res) => {
   try {
-    const { code } = req.params;
-    let result;
+    const code = req.params.code;
 
-    // Try exact match on material_code
-    result = await pool.query(
+    // Try to find by code first
+    let result = await pool.query(
       "SELECT * FROM materials WHERE material_code=$1",
       [code]
     );
@@ -436,11 +422,9 @@ app.get("/materials/:code", async (req, res) => {
   }
 });
 
-
 app.get("/materials/search", async (req, res) => {
   try {
     const q = req.query.q;
-    // Search by material_name or material_code
     const result = await pool.query(
       "SELECT * FROM materials WHERE material_name ILIKE $1 OR material_code ILIKE $1 LIMIT 10",
       [`%${q}%`]
@@ -463,28 +447,27 @@ app.put("/materials/:id", async (req, res) => {
       material_code,
       material_name,
       material_type,
+      category,
       supplier_address,
       bill_no_invoice,
       opening_balance,
       quantity_received,
       quantity_issued,
       balance,
-      available_qty,
-      amount_with_gst
+      available_qty
     } = req.body;
 
     console.log(`📝 Updating material ID: ${id}`);
     console.log(`  Code: ${material_code}`);
     console.log(`  Name: ${material_name}`);
     console.log(`  Type: ${material_type}`);
+    console.log(`  Category: ${category}`);
     console.log(`  Supplier: ${supplier_address}`);
     console.log(`  Bill No: ${bill_no_invoice}`);
     console.log(`  Opening Balance: ${opening_balance}`);
     console.log(`  Qty Received: ${quantity_received}`);
     console.log(`  Qty Issued: ${quantity_issued}`);
     console.log(`  Balance: ${balance}`);
-    console.log(`  Amount with GST: ${amount_with_gst}`);
-    console.log(`  Available Qty: ${available_qty}`);
 
     // Validate required fields
     if (!material_code || !material_name) {
@@ -520,9 +503,8 @@ app.put("/materials/:id", async (req, res) => {
         quantity_received = $7,
         quantity_issued = $8,
         balance = $9,
-        available_quantity = $10,
-        amount_with_gst = $11
-      WHERE id = $12
+        available_quantity = $10
+      WHERE id = $11
       RETURNING *
     `;
 
@@ -537,7 +519,6 @@ app.put("/materials/:id", async (req, res) => {
       parseInt(quantity_issued) || 0,
       parseInt(balance) || 0,
       parseInt(available_qty) || 0,
-      parseFloat(amount_with_gst) || 0,
       id
     ];
 
@@ -631,10 +612,10 @@ app.delete("/materials/:id", async (req, res) => {
 });
 
 // ============================================
-// UPLOAD MATERIALS - FIXED
+// UPLOAD MATERIALS - IMPROVED
 // ============================================
 app.post("/upload-materials", async (req, res) => {
-  console.log("\n========== POST /upload-materials (FIXED) ==========");
+  console.log("\n========== POST /upload-materials ==========");
 
   try {
     const { materials } = req.body;
@@ -667,10 +648,13 @@ app.post("/upload-materials", async (req, res) => {
       const material = materials[index];
       const rowNum = index + 2; // Row number in Excel (starting from row 2)
 
+      console.log(`\n📝 Processing row ${rowNum}:`, material);
+
       try {
         // Validate required fields
         if (!material.material_code || !material.material_name) {
           const error = `Row ${rowNum}: Missing required fields (material_code or material_name)`;
+          console.warn(`⚠️ ${error}`);
           errors.push(error);
           failedCount++;
           continue;
@@ -678,11 +662,22 @@ app.post("/upload-materials", async (req, res) => {
 
         const materialCode = String(material.material_code).trim();
         const materialName = String(material.material_name).trim();
-        const materialType = material.material_type ? String(material.material_type).trim() : "General";
+        const totalQty = parseInt(material.total_qty) || 0;
+        const availableQty = parseInt(material.available_qty) || 0;
 
-        // Use balance and available_quantity (default to 0 if missing)
-        const balance = material.balance ? parseInt(material.balance) : 0;
-        const availableQty = material.available_quantity ? parseInt(material.available_quantity) : 0;
+        console.log(`  Material Code: ${materialCode}`);
+        console.log(`  Material Name: ${materialName}`);
+        console.log(`  Total Qty: ${totalQty}`);
+        console.log(`  Available Qty: ${availableQty}`);
+
+        // Validate quantities
+        if (availableQty > totalQty) {
+          const error = `Row ${rowNum}: Available quantity (${availableQty}) exceeds total quantity (${totalQty})`;
+          console.warn(`⚠️ ${error}`);
+          errors.push(error);
+          failedCount++;
+          continue;
+        }
 
         // Check if material already exists
         const existing = await pool.query(
@@ -692,19 +687,22 @@ app.post("/upload-materials", async (req, res) => {
 
         if (existing.rows.length > 0) {
           // UPDATE existing material
-          // Only updating name as per previous instruction to not zero out invalid columns
+          console.log(`  ♻️ Material exists, updating...`);
           await pool.query(
-            "UPDATE materials SET material_name=$1 WHERE material_code=$2",
-            [materialName, materialCode]
+            "UPDATE materials SET material_name=$1, total_qty=$2, available_qty=$3 WHERE material_code=$4",
+            [materialName, totalQty, availableQty, materialCode]
           );
           updatedCount++;
+          console.log(`  ✅ Updated successfully`);
         } else {
           // CREATE new material
+          console.log(`  ✨ Material is new, creating...`);
           await pool.query(
-            "INSERT INTO materials (material_name, material_code, balance, available_quantity, opening_balance, material_type) VALUES ($1,$2,$3,$4,$5,$6)",
-            [materialName, materialCode, balance, availableQty, balance, materialType]
+            "INSERT INTO materials (material_name, material_code, total_qty, available_qty) VALUES ($1,$2,$3,$4)",
+            [materialName, materialCode, totalQty, available_qty]
           );
           uploadedCount++;
+          console.log(`  ✅ Created successfully`);
         }
       } catch (error) {
         failedCount++;
@@ -721,6 +719,12 @@ app.post("/upload-materials", async (req, res) => {
     console.log(`✅ Total Success: ${totalSuccess}/${materials.length}`);
     console.log(summary);
 
+    if (errors.length > 0) {
+      console.log(`⚠️ Errors encountered:`);
+      errors.forEach(err => console.log(`   - ${err}`));
+    }
+
+    // Return response based on success/failure
     if (totalSuccess === 0) {
       return res.status(400).json({
         message: "No materials were uploaded",
@@ -730,8 +734,10 @@ app.post("/upload-materials", async (req, res) => {
     }
 
     res.status(200).json({
-      message: `${totalSuccess} material(s) processed successfully`,
-      summary: summary,
+      message: `${totalSuccess} material(s) processed successfully (${summary})`,
+      created: uploadedCount,
+      updated: updatedCount,
+      failed: failedCount,
       errors: errors.length > 0 ? errors : undefined
     });
 
@@ -761,8 +767,8 @@ app.post("/checkout", async (req, res) => {
     const { username, material_code, quantity } = req.body;
     const qty = quantity || 1;
 
-    // Use material_code from request (frontend sends this) but query material_code column
-    const mat = await pool.query("SELECT * FROM materials WHERE material_code=$1", [material_code]);
+    // Use material_code from request (frontend sends this) but query item_code column
+    const mat = await pool.query("SELECT * FROM materials WHERE item_code=$1", [material_code]);
 
     if (mat.rows.length === 0) {
       return res.status(404).json({ message: "Material not found" });
@@ -770,19 +776,19 @@ app.post("/checkout", async (req, res) => {
 
     const material = mat.rows[0];
 
-    // Use available_quantity from DB
-    if (material.available_quantity < qty) {
+    // Use available_qty from DB
+    if (material.available_qty < qty) {
       return res.status(400).json({ message: "Insufficient stock available" });
     }
 
     await pool.query(
-      "UPDATE materials SET available_quantity = available_quantity - $1 WHERE material_code=$2",
+      "UPDATE materials SET available_qty = available_qty - $1 WHERE item_code=$2",
       [qty, material_code]
     );
 
     await pool.query(
-      "INSERT INTO transactions (username, item_code, item_name, action, quantity) VALUES ($1,$2,$3,$4,$5)",
-      [username, material_code, material.material_name, "checkout", qty]
+      "INSERT INTO transactions (username, item_code, item_name, action) VALUES ($1,$2,$3,$4)",
+      [username, material_code, material.item_name, "checkout"]
     );
 
     res.json({ message: "Checkout successful" });
@@ -797,7 +803,7 @@ app.post("/checkin", async (req, res) => {
     const { username, material_code, quantity } = req.body;
     const qty = quantity || 1;
 
-    const mat = await pool.query("SELECT * FROM materials WHERE material_code=$1", [material_code]);
+    const mat = await pool.query("SELECT * FROM materials WHERE item_code=$1", [material_code]);
 
     if (mat.rows.length === 0) {
       return res.status(404).json({ message: "Material not found" });
@@ -805,26 +811,19 @@ app.post("/checkin", async (req, res) => {
 
     const material = mat.rows[0];
 
-    // Use available_quantity from DB
-    // Logic: If available + new > max? User schema has 'balance', 'available_quantity', 'opening_balance'. 
-    // Assuming we just increment available_quantity.
-
-    // if (material.available_quantity + qty > material.total_qty) ... total_qty column missing in actual DB. 
-    // skipping total_qty check or using opening_balance?
-    // Let's just increment available_quantity without upper bound check for now, or check opening_balance if that represents total.
-
-    // if (material.available_quantity + qty > material.opening_balance) { 
-    //   return res.status(400).json({ message: "Cannot exceed total stock limit" });
-    // }
+    // Use available_qty and total_qty from DB
+    if (material.available_qty + qty > material.total_qty) {
+      return res.status(400).json({ message: "Cannot exceed total stock limit" });
+    }
 
     await pool.query(
-      "UPDATE materials SET available_quantity = available_quantity + $1 WHERE material_code=$2",
+      "UPDATE materials SET available_qty = available_qty + $1 WHERE item_code=$2",
       [qty, material_code]
     );
 
     await pool.query(
-      "INSERT INTO transactions (username, item_code, item_name, action, quantity) VALUES ($1,$2,$3,$4,$5)",
-      [username, material_code, material.material_name, "checkin", qty]
+      "INSERT INTO transactions (username, item_code, item_name, action) VALUES ($1,$2,$3,$4)",
+      [username, material_code, material.item_name, "checkin"]
     );
 
     res.json({ message: "Checkin successful" });
@@ -1107,8 +1106,8 @@ app.get("/export", async (req, res) => {
       { header: "ID", key: "id", width: 10 },
       { header: "Material Name", key: "material_name", width: 30 },
       { header: "Material Code", key: "material_code", width: 20 },
-      { header: "Total Qty", key: "opening_balance", width: 15 },
-      { header: "Available Qty", key: "available_quantity", width: 15 }
+      { header: "Total Qty", key: "total_qty", width: 15 },
+      { header: "Available Qty", key: "available_qty", width: 15 }
     ];
 
     materials.rows.forEach((row) => sheet1.addRow(row));
@@ -1165,10 +1164,42 @@ app.get("/export", async (req, res) => {
 // ============================================
 // 404 HANDLER
 // ============================================
-app.use((req, res) => {
-  console.log("❌ 404 - Route not found:", req.path);
-  res.setHeader("Content-Type", "application/json");
-  res.status(404).json({ message: "Route not found" });
+// ============================================
+// 404 HANDLER / FALLBACK
+// ============================================
+app.get("*", (req, res) => {
+  // If request accepts html, try to send login.html
+  if (req.accepts("html")) {
+    const loginPath = path.join(__dirname, "../login.html");
+    const cwdPath = path.join(process.cwd(), "login.html");
+
+    // Check if file exists (async)
+    res.sendFile(loginPath, (err) => {
+      if (err) {
+        console.error("❌ Error sending login.html from:", loginPath);
+        console.error("Error details:", err);
+        console.log("__dirname:", __dirname);
+        console.log("process.cwd():", process.cwd());
+
+        // Try fallback to process.cwd()
+        if (loginPath !== cwdPath) {
+          console.log("🔄 Trying fallback path:", cwdPath);
+          res.sendFile(cwdPath, (err2) => {
+            if (err2) {
+              console.error("❌ Fallback failed also:", err2);
+              res.status(404).json({ message: "Login page not found", error: err.message });
+            }
+          });
+        } else {
+          res.status(404).json({ message: "Login page not found", error: err.message });
+        }
+      }
+    });
+  } else {
+    console.log("❌ 404 - Route not found:", req.path);
+    res.setHeader("Content-Type", "application/json");
+    res.status(404).json({ message: "Route not found" });
+  }
 });
 
 // ============================================
@@ -1184,97 +1215,15 @@ app.use((err, req, res, next) => {
 });
 
 // ============================================
-// AUTO-MIGRATION: Ensure all required columns exist
+// START SERVER
 // ============================================
-async function runMigrations() {
-  try {
-    console.log("🔧 Running auto-migrations...");
-
-    // Check and add amount_with_gst column if missing
-    const gstCheck = await pool.query(`
-      SELECT column_name FROM information_schema.columns 
-      WHERE table_name = 'materials' AND column_name = 'amount_with_gst'
-    `);
-    if (gstCheck.rows.length === 0) {
-      await pool.query("ALTER TABLE materials ADD COLUMN amount_with_gst NUMERIC DEFAULT 0");
-      console.log("  ✅ Added missing column: amount_with_gst");
-    } else {
-      console.log("  ✓ Column exists: amount_with_gst");
-    }
-
-    // Check and add available_quantity column if missing
-    const aqCheck = await pool.query(`
-      SELECT column_name FROM information_schema.columns 
-      WHERE table_name = 'materials' AND column_name = 'available_quantity'
-    `);
-    if (aqCheck.rows.length === 0) {
-      await pool.query("ALTER TABLE materials ADD COLUMN available_quantity INT DEFAULT 0");
-      console.log("  ✅ Added missing column: available_quantity");
-    } else {
-      console.log("  ✓ Column exists: available_quantity");
-    }
-
-    // Check and add material_type column if missing
-    const mtCheck = await pool.query(`
-      SELECT column_name FROM information_schema.columns 
-      WHERE table_name = 'materials' AND column_name = 'material_type'
-    `);
-    if (mtCheck.rows.length === 0) {
-      await pool.query("ALTER TABLE materials ADD COLUMN material_type VARCHAR(100)");
-      console.log("  ✅ Added missing column: material_type");
-    } else {
-      console.log("  ✓ Column exists: material_type");
-    }
-
-    // Check and add supplier_address column if missing
-    const saCheck = await pool.query(`
-      SELECT column_name FROM information_schema.columns 
-      WHERE table_name = 'materials' AND column_name = 'supplier_address'
-    `);
-    if (saCheck.rows.length === 0) {
-      await pool.query("ALTER TABLE materials ADD COLUMN supplier_address TEXT");
-      console.log("  ✅ Added missing column: supplier_address");
-    } else {
-      console.log("  ✓ Column exists: supplier_address");
-    }
-
-    // Check and add bill_no_invoice column if missing
-    const bnCheck = await pool.query(`
-      SELECT column_name FROM information_schema.columns 
-      WHERE table_name = 'materials' AND column_name = 'bill_no_invoice'
-    `);
-    if (bnCheck.rows.length === 0) {
-      await pool.query("ALTER TABLE materials ADD COLUMN bill_no_invoice VARCHAR(100)");
-      console.log("  ✅ Added missing column: bill_no_invoice");
-    } else {
-      console.log("  ✓ Column exists: bill_no_invoice");
-    }
-
-    // Check and add quantity column to transactions table if missing
-    const qtyCheck = await pool.query(`
-      SELECT column_name FROM information_schema.columns 
-      WHERE table_name = 'transactions' AND column_name = 'quantity'
-    `);
-    if (qtyCheck.rows.length === 0) {
-      await pool.query("ALTER TABLE transactions ADD COLUMN quantity INT DEFAULT 1");
-      console.log("  ✅ Added missing column: transactions.quantity");
-    } else {
-      console.log("  ✓ Column exists: transactions.quantity");
-    }
-
-    console.log("🔧 Migrations complete!");
-  } catch (err) {
-    console.error("❌ Migration error:", err.message);
-  }
-}
-
 // ============================================
 // START SERVER
 // ============================================
 const PORT = process.env.PORT || 5000;
 
-// Run migrations then start server
-runMigrations().then(() => {
+// Initialize DB then start server
+setupDatabase().then(() => {
   app.listen(PORT, () => {
     console.log(`✅ Server running on port ${PORT}`);
     console.log("✅ All features enabled");
@@ -1287,4 +1236,6 @@ runMigrations().then(() => {
     console.log(`📍 Database column: 'mail' (not 'email')`);
     console.log(`📍 Environment: ${process.env.NODE_ENV || "development"}`);
   });
+}).catch(err => {
+  console.error("❌ Failed to start server due to DB init error:", err);
 });
