@@ -3,7 +3,7 @@ const path = require("path");
 const cors = require("cors");
 const pool = require("./db");
 const ExcelJS = require("exceljs");
-const setupDatabase = require("./setup_db");
+const setupDatabase = require(path.join(__dirname, "setup_db.js"));
 
 const app = express();
 
